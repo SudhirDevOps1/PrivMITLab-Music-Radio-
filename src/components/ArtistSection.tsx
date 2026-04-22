@@ -1,9 +1,8 @@
 import { memo, useState, useCallback, useMemo } from 'react';
-import { Music } from 'lucide-react';
 import type { Artist } from '@/types';
 import { ARTISTS } from '@/data/artists';
 
-// ─── Genre Gradients (fallback avatar colors) ──────────────
+// ─── Genre Gradients (fallback) ───────────────────────────
 const GENRE_GRADIENTS: Record<string, string> = {
   Bollywood:   'from-violet-500 to-pink-500',
   Classical:   'from-amber-500 to-orange-500',
@@ -16,7 +15,7 @@ const GENRE_GRADIENTS: Record<string, string> = {
 };
 const DEFAULT_GRADIENT = 'from-violet-500 to-pink-500';
 
-// ─── Artist Avatar with loading + error states ──────────────
+// ─── Artist Avatar with loading skeleton + error fallback ──
 const ArtistAvatar = memo(function ArtistAvatar({
   artist,
   size,
@@ -32,24 +31,23 @@ const ArtistAvatar = memo(function ArtistAvatar({
   const gradient = GENRE_GRADIENTS[artist.genre] || DEFAULT_GRADIENT;
   const initial = artist.name.charAt(0).toUpperCase();
 
-  // Show skeleton / shimmer while loading
+  // Show shimmer skeleton while loading
   if (imageStatus === 'loading') {
     return (
       <div
         className="w-full h-full rounded-2xl bg-gradient-to-br from-gray-200 to-gray-300 dark:from-gray-700 dark:to-gray-800 animate-pulse"
         style={{ width: size, height: size }}
-        aria-label={`Loading ${artist.name} image`}
+        aria-label={`Loading ${artist.name}`}
       />
     );
   }
 
-  // Show gradient fallback on error or if image URL is missing
+  // Fallback on error or missing image
   if (imageStatus === 'error' || !artist.image) {
     return (
       <div
         className={`w-full h-full rounded-2xl bg-gradient-to-br ${gradient} flex items-center justify-center shadow-md`}
         style={{ width: size, height: size }}
-        aria-hidden="true"
       >
         <span className="text-white font-bold" style={{ fontSize: size * 0.4 }}>
           {initial}
@@ -58,7 +56,7 @@ const ArtistAvatar = memo(function ArtistAvatar({
     );
   }
 
-  // Successfully loaded image
+  // Success – show actual image
   return (
     <div className="w-full h-full rounded-2xl overflow-hidden" style={{ width: size, height: size }}>
       <img
@@ -69,16 +67,16 @@ const ArtistAvatar = memo(function ArtistAvatar({
         onError={handleError}
         loading="lazy"
         decoding="async"
+        referrerPolicy="no-referrer"  // helps with hotlinking protection
         draggable={false}
       />
     </div>
   );
 });
 
-// ─── Genre Filter Buttons (unchanged) ───────────────────────
+// ─── Genre Filter (unchanged) ─────────────────────────────
 const GENRE_LABELS = ['All', 'Bollywood', 'Punjabi', 'Bhojpuri', 'Classic', 'Hip-Hop', 'Composer'];
 
-// ─── Main Section ───────────────────────────────────────────
 interface Props {
   onArtistClick: (query: string) => void;
   darkMode: boolean;
@@ -118,7 +116,7 @@ export default memo(function ArtistSection({ onArtistClick, darkMode }: Props) {
         ))}
       </div>
 
-      {/* Artist grid — responsive columns */}
+      {/* Artist grid */}
       <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-3 sm:gap-4">
         {filteredArtists.map((artist) => (
           <button
@@ -126,17 +124,12 @@ export default memo(function ArtistSection({ onArtistClick, darkMode }: Props) {
             onClick={() => onArtistClick(artist.searchQuery || `${artist.name} songs`)}
             className="flex flex-col items-center gap-1.5 group transition-all hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-violet-500 rounded-2xl"
           >
-            {/* Avatar with fixed size */}
             <div className="w-20 h-20 sm:w-24 sm:h-24 md:w-28 md:h-28 rounded-2xl overflow-hidden shadow-md group-hover:shadow-xl transition-shadow">
               <ArtistAvatar artist={artist} size={112} />
             </div>
-
-            {/* Name */}
             <p className="text-[10px] sm:text-xs font-medium text-center leading-tight truncate w-full max-w-[112px]">
               {artist.name}
             </p>
-
-            {/* Genre tag */}
             <p className="text-[8px] sm:text-[10px] text-gray-400 truncate">
               {artist.genre}
             </p>
