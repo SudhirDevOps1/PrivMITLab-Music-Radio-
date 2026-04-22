@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import { Radio, Search, Play, Pause, Volume2, VolumeX, Star, Heart, Wifi, WifiOff } from 'lucide-react';
 import type { RadioStation } from '@/types';
 import {
@@ -12,7 +12,8 @@ interface Props {
   addToast: (msg: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
-function StationCard({
+// ─── Memoized Station Card ──────────────────────────────────────────────────
+const StationCard = memo(function StationCard({
   station, isActive, isPlaying, isFavorite,
   darkMode, onPlay, onToggleFavorite,
 }: {
@@ -26,9 +27,13 @@ function StationCard({
 }) {
   const [imgFailed, setImgFailed] = useState(false);
 
+  const handlePlay = useCallback(() => onPlay(station), [onPlay, station]);
+  const handleFav = useCallback(() => onToggleFavorite(station.stationuuid), [onToggleFavorite, station.stationuuid]);
+  const handleImgError = useCallback(() => setImgFailed(true), []);
+
   return (
     <div
-      className={`flex items-center gap-3 p-3 rounded-xl transition-all group ${
+      className={`flex items-center gap-3 p-3 rounded-xl transition-all group transform-gpu ${
         isActive
           ? 'bg-violet-500/20 border border-violet-500/50'
           : darkMode
@@ -43,11 +48,13 @@ function StationCard({
             src={station.favicon}
             alt={station.name}
             className="w-12 h-12 rounded-xl object-cover"
-            onError={() => setImgFailed(true)}
+            onError={handleImgError}
             loading="lazy"
+            decoding="async"
+            draggable={false}
           />
         ) : (
-          <div className={`w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center`}>
+          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center">
             <Radio className="w-6 h-6 text-white" />
           </div>
         )}
@@ -91,7 +98,8 @@ function StationCard({
       {/* Actions */}
       <div className="flex items-center gap-1 flex-shrink-0">
         <button
-          onClick={() => onToggleFavorite(station.stationuuid)}
+          onClick={handleFav}
+          aria-label={isFavorite ? `Unfavorite ${station.name}` : `Favorite ${station.name}`}
           className={`p-1.5 rounded-full transition-colors ${
             isFavorite ? 'text-pink-500' : darkMode ? 'text-white/30 hover:text-white' : 'text-gray-300 hover:text-gray-600'
           }`}
@@ -99,7 +107,8 @@ function StationCard({
           <Heart className={`w-4 h-4 ${isFavorite ? 'fill-pink-500' : ''}`} />
         </button>
         <button
-          onClick={() => onPlay(station)}
+          onClick={handlePlay}
+          aria-label={isPlaying ? `Pause ${station.name}` : `Play ${station.name}`}
           className={`p-2 rounded-full transition-all ${
             isActive && isPlaying
               ? 'bg-violet-500 text-white shadow-lg shadow-violet-500/40'
@@ -111,8 +120,9 @@ function StationCard({
       </div>
     </div>
   );
-}
+});
 
+// ─── Main Radio Section ─────────────────────────────────────────────────────
 export default function RadioSection({ darkMode, addToast }: Props) {
   const [stations, setStations] = useState<RadioStation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -123,35 +133,65 @@ export default function RadioSection({ darkMode, addToast }: Props) {
   const [volume, setVolume] = useState(80);
   const [isMuted, setIsMuted] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('radioFavorites') || '[]')); } catch { return new Set(); }
+    try {
+      const parsed = JSON.parse(localStorage.getItem('radioFavorites') || '[]');
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch { return new Set(); }
   });
   const [showFavorites, setShowFavorites] = useState(false);
   const [streamError, setStreamError] = useState(false);
+  const [npImgFailed, setNpImgFailed] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const addToastRef = useRef(addToast);
+  const isPlayingRef = useRef(false);
+  const streamErrorRef = useRef(false);
+  const currentStationRef = useRef<RadioStation | null>(null);
 
-  // Init audio element
+  // Sync refs
+  useEffect(() => { addToastRef.current = addToast; }, [addToast]);
+  useEffect(() => { currentStationRef.current = currentStation; }, [currentStation]);
+  useEffect(() => { setNpImgFailed(false); }, [currentStation]);
+
+  // Initialize audio ONCE
   useEffect(() => {
     const audio = new Audio();
     audio.crossOrigin = 'anonymous';
     audio.preload = 'none';
     audioRef.current = audio;
 
-    audio.addEventListener('playing', () => { setIsPlaying(true); setStreamError(false); });
-    audio.addEventListener('pause', () => setIsPlaying(false));
-    audio.addEventListener('error', () => {
-      setStreamError(true);
-      setIsPlaying(false);
-      addToast('Stream error. Trying next URL...', 'error');
+    audio.addEventListener('playing', () => {
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+      setStreamError(false);
+      streamErrorRef.current = false;
     });
-    audio.addEventListener('waiting', () => setIsPlaying(false));
-    audio.addEventListener('canplay', () => setIsPlaying(true));
+    audio.addEventListener('pause', () => {
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+    });
+    audio.addEventListener('error', () => {
+      streamErrorRef.current = true;
+      setStreamError(true);
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+      addToastRef.current('Stream error. Trying next URL...', 'error');
+    });
+    audio.addEventListener('waiting', () => {
+      isPlayingRef.current = false;
+      setIsPlaying(false);
+    });
+    audio.addEventListener('canplay', () => {
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+    });
 
     return () => {
       audio.pause();
       audio.src = '';
+      audioRef.current = null;
     };
-  }, [addToast]);
+  }, []);
 
   // Volume sync
   useEffect(() => {
@@ -169,25 +209,25 @@ export default function RadioSection({ darkMode, addToast }: Props) {
       else if (cat.type === 'language') data = await getStationsByLanguage(cat.query, 60);
       else data = await getStationsByTag(cat.query, 60);
       setStations(data);
-      if (data.length === 0) addToast('No stations found for this category', 'info');
+      if (data.length === 0) addToastRef.current('No stations found for this category', 'info');
     } catch {
-      addToast('Failed to load radio stations', 'error');
+      addToastRef.current('Failed to load radio stations', 'error');
     } finally {
       setLoading(false);
     }
-  }, [addToast]);
+  }, []);
 
   // Load top stations on mount
   useEffect(() => {
     loadCategory(RADIO_CATEGORIES[0]);
   }, [loadCategory]);
 
-  const handleCategoryClick = (cat: typeof RADIO_CATEGORIES[0]) => {
+  const handleCategoryClick = useCallback((cat: typeof RADIO_CATEGORIES[0]) => {
     setActiveCategory(cat.id);
     loadCategory(cat);
-  };
+  }, [loadCategory]);
 
-  const handleSearch = async (e?: React.FormEvent) => {
+  const handleSearch = useCallback(async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (!searchQuery.trim()) return;
     setLoading(true);
@@ -195,49 +235,53 @@ export default function RadioSection({ darkMode, addToast }: Props) {
     try {
       const data = await searchStations(searchQuery.trim(), 60);
       setStations(data);
-      if (data.length === 0) addToast('No stations found. Try different keywords.', 'info');
-      else addToast(`Found ${data.length} stations`, 'success');
+      if (data.length === 0) addToastRef.current('No stations found. Try different keywords.', 'info');
+      else addToastRef.current(`Found ${data.length} stations`, 'success');
     } catch {
-      addToast('Radio search failed', 'error');
+      addToastRef.current('Radio search failed', 'error');
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchQuery]);
 
   const playStation = useCallback((station: RadioStation) => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    if (currentStation?.stationuuid === station.stationuuid && !streamError) {
-      // Toggle play/pause
-      if (isPlaying) {
+    if (currentStationRef.current?.stationuuid === station.stationuuid && !streamErrorRef.current) {
+      if (isPlayingRef.current) {
         audio.pause();
-        setIsPlaying(false);
       } else {
-        audio.play().catch(() => setStreamError(true));
+        audio.play().catch(() => {
+          streamErrorRef.current = true;
+          setStreamError(true);
+        });
       }
       return;
     }
 
     setCurrentStation(station);
+    currentStationRef.current = station;
     setStreamError(false);
+    streamErrorRef.current = false;
     setIsPlaying(false);
+    isPlayingRef.current = false;
     audio.pause();
 
     const url = station.url_resolved || station.url;
-    if (!url) { addToast('No stream URL available', 'error'); return; }
+    if (!url) { addToastRef.current('No stream URL available', 'error'); return; }
 
     audio.src = url;
     audio.load();
     audio.play().catch((e) => {
       console.error('[Radio] play error:', e);
+      streamErrorRef.current = true;
       setStreamError(true);
-      addToast('Cannot play this station. Try another.', 'error');
+      addToastRef.current('Cannot play this station. Try another.', 'error');
     });
 
-    addToast(`📻 Playing: ${station.name}`, 'success');
+    addToastRef.current(`📻 Playing: ${station.name}`, 'success');
 
-    // Update Media Session
     if ('mediaSession' in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: station.name,
@@ -248,21 +292,26 @@ export default function RadioSection({ darkMode, addToast }: Props) {
       navigator.mediaSession.setActionHandler('play', () => audio.play());
       navigator.mediaSession.setActionHandler('pause', () => audio.pause());
     }
-  }, [currentStation, isPlaying, streamError, addToast]);
+  }, []);
 
-  const toggleFavorite = (id: string) => {
+  const toggleFavorite = useCallback((id: string) => {
     setFavorites((prev) => {
       const n = new Set(prev);
-      if (n.has(id)) { n.delete(id); addToast('Removed from favorites', 'info'); }
-      else { n.add(id); addToast('Added to favorites ❤️', 'success'); }
+      if (n.has(id)) {
+        n.delete(id);
+        addToastRef.current('Removed from favorites', 'info');
+      } else {
+        n.add(id);
+        addToastRef.current('Added to favorites ❤️', 'success');
+      }
       localStorage.setItem('radioFavorites', JSON.stringify([...n]));
       return n;
     });
-  };
+  }, []);
 
-  const displayedStations = showFavorites
-    ? stations.filter((s) => favorites.has(s.stationuuid))
-    : stations;
+  const displayedStations = useMemo(() => {
+    return showFavorites ? stations.filter((s) => favorites.has(s.stationuuid)) : stations;
+  }, [stations, showFavorites, favorites]);
 
   const card = darkMode ? 'bg-white/5 border-white/10' : 'bg-white/60 border-gray-200';
 
@@ -304,7 +353,7 @@ export default function RadioSection({ darkMode, addToast }: Props) {
         </form>
 
         {/* Categories */}
-        <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+        <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
           <button
             onClick={() => setShowFavorites(!showFavorites)}
             className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-all flex items-center gap-1 border ${
@@ -342,12 +391,13 @@ export default function RadioSection({ darkMode, addToast }: Props) {
           <div className="flex items-center gap-4">
             <div className="relative">
               <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center flex-shrink-0">
-                {currentStation.favicon && !streamError ? (
+                {currentStation.favicon && !npImgFailed ? (
                   <img
                     src={currentStation.favicon}
                     alt={currentStation.name}
                     className="w-14 h-14 rounded-xl object-cover"
-                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    onError={() => setNpImgFailed(true)}
+                    draggable={false}
                   />
                 ) : (
                   <Radio className="w-7 h-7 text-white" />
@@ -372,19 +422,24 @@ export default function RadioSection({ darkMode, addToast }: Props) {
             </div>
 
             <div className="flex items-center gap-2 flex-shrink-0">
-              {/* Volume */}
-              <button onClick={() => setIsMuted(!isMuted)} className={`p-2 rounded-full ${darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'}`}>
+              <button
+                onClick={() => setIsMuted(!isMuted)}
+                aria-label={isMuted ? 'Unmute' : 'Mute'}
+                className={`p-2 rounded-full ${darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'}`}
+              >
                 {isMuted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
               </button>
               <input
                 type="range" min={0} max={100} value={isMuted ? 0 : volume}
                 onChange={(e) => { setVolume(Number(e.target.value)); setIsMuted(Number(e.target.value) === 0); }}
                 className="w-20 accent-violet-500 hidden md:block"
+                aria-label="Volume"
               />
 
               <button
                 onClick={() => playStation(currentStation)}
                 className="p-3 bg-gradient-to-r from-violet-500 to-pink-500 rounded-full hover:opacity-90 shadow-lg"
+                aria-label={isPlaying ? 'Pause' : 'Play'}
               >
                 {isPlaying
                   ? <Pause className="w-5 h-5 text-white fill-white" />
