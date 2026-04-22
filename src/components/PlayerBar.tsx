@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useCallback, useMemo, useRef, useEffect, memo } from 'react';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX,
   Shuffle, Repeat, ListMusic, Heart,
@@ -26,38 +26,81 @@ interface Props {
   onToggleQueue: () => void;
 }
 
+const REPEAT_MODES: Array<'none' | 'one' | 'all'> = ['none', 'one', 'all'];
+
 function formatTime(s: number): string {
   if (!s || isNaN(s)) return '0:00';
   return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 }
 
-export default function PlayerBar({
+export default memo(function PlayerBar({
   currentSong, isPlaying, playerState,
   isFavorite, showQueue, darkMode,
   onTogglePlay, onNext, onPrevious, onSeek,
   onSetVolume, onToggleMute, onToggleShuffle,
   onSetRepeatMode, onToggleFavorite, onToggleQueue,
 }: Props) {
-  const progressRef = useRef<HTMLDivElement>(null);
+  const seekBarRef = useRef<HTMLDivElement>(null);
+  const durationRef = useRef(playerState.duration);
 
-  if (!currentSong) return null;
+  // Keep duration in sync for drag operations
+  useEffect(() => { durationRef.current = playerState.duration; }, [playerState.duration]);
+
+  // ─── Seek Drag Support ───────────────────────────────────────────────────
+  const handleSeekInteraction = useCallback((clientX: number, target: HTMLElement) => {
+    const rect = target.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    onSeek(pct * durationRef.current);
+  }, [onSeek]);
+
+  const handleSeekMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    handleSeekInteraction(e.clientX, target);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
+      handleSeekInteraction(moveEvent.clientX, target);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, [handleSeekInteraction]);
+
+  const handleSeekKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? 30 : 5;
+    if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      onSeek(Math.min(durationRef.current, playerState.currentTime + step));
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      onSeek(Math.max(0, playerState.currentTime - step));
+    }
+  }, [onSeek, playerState.currentTime]);
+
+  // ─── Memoized values ─────────────────────────────────────────────────────
+  const nextRepeat = useCallback(() => {
+    const i = REPEAT_MODES.indexOf(playerState.repeatMode);
+    onSetRepeatMode(REPEAT_MODES[(i + 1) % 3]);
+  }, [playerState.repeatMode, onSetRepeatMode]);
 
   const progress = playerState.duration
     ? (playerState.currentTime / playerState.duration) * 100
     : 0;
 
-  const card = darkMode
+  const cardClass = darkMode
     ? 'bg-slate-900/95 backdrop-blur-xl border-white/10'
     : 'bg-white/95 backdrop-blur-xl border-gray-200';
 
-  const nextRepeat = () => {
-    const modes: Array<'none' | 'one' | 'all'> = ['none', 'one', 'all'];
-    const i = modes.indexOf(playerState.repeatMode);
-    onSetRepeatMode(modes[(i + 1) % 3]);
-  };
+  // ─── Early return AFTER all hooks ────────────────────────────────────────
+  if (!currentSong) return null;
 
   return (
-    <div className={`fixed bottom-0 left-0 right-0 ${card} border-t z-50 shadow-2xl`}>
+    <div className={`fixed bottom-0 left-0 right-0 ${cardClass} border-t z-50 shadow-2xl`} role="region" aria-label="Music Player">
       {/* Waveform */}
       <div className="px-4 pt-1">
         <WaveformVisualizer isPlaying={isPlaying} darkMode={darkMode} />
@@ -65,19 +108,23 @@ export default function PlayerBar({
 
       {/* Seek bar */}
       <div
-        ref={progressRef}
+        ref={seekBarRef}
+        role="slider"
+        aria-label="Seek"
+        aria-valuemin={0}
+        aria-valuemax={playerState.duration || 0}
+        aria-valuenow={Math.floor(playerState.currentTime)}
+        aria-valuetext={`${formatTime(playerState.currentTime)} of ${formatTime(playerState.duration)}`}
+        tabIndex={0}
+        onKeyDown={handleSeekKeyDown}
+        onMouseDown={handleSeekMouseDown}
         className={`w-full h-1.5 cursor-pointer group ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}
-        onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const pct = (e.clientX - rect.left) / rect.width;
-          onSeek(pct * playerState.duration);
-        }}
       >
         <div
-          className="h-full bg-gradient-to-r from-violet-500 to-pink-500 relative transition-all"
+          className="h-full bg-gradient-to-r from-violet-500 to-pink-500 relative"
           style={{ width: `${progress}%` }}
         >
-          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" />
+          <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full shadow-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
         </div>
       </div>
 
@@ -99,6 +146,7 @@ export default function PlayerBar({
             </div>
             <button
               onClick={onToggleFavorite}
+              aria-label={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
               className={`p-1.5 md:p-2 rounded-full flex-shrink-0 transition-colors ${
                 isFavorite ? 'text-pink-500' : darkMode ? 'text-white/40 hover:text-white' : 'text-gray-400 hover:text-gray-700'
               }`}
@@ -111,6 +159,7 @@ export default function PlayerBar({
           <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
             <button
               onClick={onToggleShuffle}
+              aria-label={`Shuffle ${playerState.isShuffle ? 'on' : 'off'}`}
               className={`p-1.5 rounded-lg transition-colors hidden md:flex ${
                 playerState.isShuffle
                   ? 'text-violet-400 bg-violet-500/20'
@@ -123,6 +172,7 @@ export default function PlayerBar({
 
             <button
               onClick={onPrevious}
+              aria-label="Previous track"
               className={`p-1.5 md:p-2 rounded-full transition-colors ${
                 darkMode ? 'hover:bg-white/10 text-white/80' : 'hover:bg-gray-100 text-gray-700'
               }`}
@@ -133,7 +183,8 @@ export default function PlayerBar({
 
             <button
               onClick={onTogglePlay}
-              className="p-2.5 md:p-3 bg-gradient-to-r from-violet-500 to-pink-500 rounded-full hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-violet-500/30"
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              className="p-2.5 md:p-3 bg-gradient-to-r from-violet-500 to-pink-500 rounded-full hover:opacity-90 active:scale-95 transition-all shadow-lg shadow-violet-500/30 transform-gpu"
               title="Play/Pause (Space)"
             >
               {isPlaying
@@ -143,6 +194,7 @@ export default function PlayerBar({
 
             <button
               onClick={onNext}
+              aria-label="Next track"
               className={`p-1.5 md:p-2 rounded-full transition-colors ${
                 darkMode ? 'hover:bg-white/10 text-white/80' : 'hover:bg-gray-100 text-gray-700'
               }`}
@@ -153,6 +205,7 @@ export default function PlayerBar({
 
             <button
               onClick={nextRepeat}
+              aria-label={`Repeat mode: ${playerState.repeatMode}`}
               className={`p-1.5 rounded-lg relative transition-colors hidden md:flex ${
                 playerState.repeatMode !== 'none'
                   ? 'text-violet-400 bg-violet-500/20'
@@ -162,14 +215,16 @@ export default function PlayerBar({
             >
               <Repeat className="w-4 h-4" />
               {playerState.repeatMode === 'one' && (
-                <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold bg-violet-500 text-white w-3.5 h-3.5 flex items-center justify-center rounded-full">1</span>
+                <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold bg-violet-500 text-white w-3.5 h-3.5 flex items-center justify-center rounded-full">
+                  1
+                </span>
               )}
             </button>
           </div>
 
           {/* Volume + Time + Queue */}
           <div className="flex items-center gap-1 md:gap-3 flex-1 justify-end min-w-0">
-            <div className="hidden md:flex items-center gap-1 text-xs text-gray-400 flex-shrink-0">
+            <div className="hidden md:flex items-center gap-1 text-xs text-gray-400 flex-shrink-0" aria-live="off">
               <span>{formatTime(playerState.currentTime)}</span>
               <span>/</span>
               <span>{formatTime(playerState.duration)}</span>
@@ -178,6 +233,7 @@ export default function PlayerBar({
             <div className="hidden md:flex items-center gap-1.5">
               <button
                 onClick={onToggleMute}
+                aria-label={playerState.isMuted ? 'Unmute' : 'Mute'}
                 className={`p-1.5 rounded-full ${darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'}`}
                 title="Mute (M)"
               >
@@ -191,12 +247,14 @@ export default function PlayerBar({
                 max={100}
                 value={playerState.isMuted ? 0 : playerState.volume}
                 onChange={(e) => onSetVolume(Number(e.target.value))}
+                aria-label="Volume"
                 className="w-20 accent-violet-500 cursor-pointer"
               />
             </div>
 
             <button
               onClick={onToggleQueue}
+              aria-label={showQueue ? 'Hide queue' : 'Show queue'}
               className={`p-1.5 md:p-2 rounded-lg transition-colors ${
                 showQueue
                   ? 'bg-violet-500 text-white'
@@ -211,4 +269,4 @@ export default function PlayerBar({
       </div>
     </div>
   );
-}
+});
