@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   Search, Settings, Music, Moon, Sun, Radio,
   TrendingUp, Clock, Heart, X, Play,
@@ -23,11 +23,20 @@ import ToastContainer from '@/components/ToastContainer';
 import RadioSection from '@/components/RadioSection';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-function formatTime(s: number): string {
-  if (!s || isNaN(s)) return '0:00';
-  return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+function safeJSONParse<T>(val: string | null, fallback: T): T {
+  if (!val) return fallback;
+  try {
+    const parsed = JSON.parse(val);
+    return parsed ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
-void formatTime; // used in PlayerBar, just suppresses lint
+
+function safeSetParse(val: string | null): Set<string> {
+  const arr = safeJSONParse<unknown[]>(val, []);
+  return new Set(Array.isArray(arr) ? arr : []);
+}
 
 // ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -50,12 +59,12 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   // ── Persistent data ────────────────────────────────────────────────────────
-  const [recentlyPlayed, setRecentlyPlayed] = useState<Song[]>(() => {
-    try { return JSON.parse(localStorage.getItem('recentlyPlayed') || '[]'); } catch { return []; }
-  });
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('favorites') || '[]')); } catch { return new Set(); }
-  });
+  const [recentlyPlayed, setRecentlyPlayed] = useState<Song[]>(() =>
+    safeJSONParse<Song[]>(localStorage.getItem('recentlyPlayed'), []),
+  );
+  const [favorites, setFavorites] = useState<Set<string>>(() =>
+    safeSetParse(localStorage.getItem('favorites')),
+  );
 
   // ── Hooks ─────────────────────────────────────────────────────────────────
   const { toasts, addToast, removeToast } = useToast();
@@ -63,39 +72,64 @@ export default function App() {
   const { cachedSongs, handleClearCache, refreshCache } = useOfflineCache();
   const player = usePlayer(queue);
 
-  // Refs to avoid stale closures in event listeners
+  // ── Refs for stable event listeners ───────────────────────────────────────
   const playerRef = useRef(player);
   const queueRef = useRef(queue);
+  const addToastRef = useRef(addToast);
+  const favoritesRef = useRef(favorites);
+
   useEffect(() => { playerRef.current = player; }, [player]);
   useEffect(() => { queueRef.current = queue; }, [queue]);
+  useEffect(() => { addToastRef.current = addToast; }, [addToast]);
+  useEffect(() => { favoritesRef.current = favorites; }, [favorites]);
+
+  // ── Derived Sets for O(1) lookups ─────────────────────────────────────────
+  const cachedVideoIds = useMemo(
+    () => new Set(cachedSongs.map((c) => c.videoId)),
+    [cachedSongs],
+  );
+
+  const favoriteSongs = useMemo(
+    () => recentlyPlayed.filter((s) => favorites.has(s.videoId)).slice(0, 5),
+    [recentlyPlayed, favorites],
+  );
+
+  const stats = useMemo(() => [
+    { label: 'Artists', value: `${ARTISTS.length}+`, icon: '🎤' },
+    { label: 'Offline Songs', value: String(cachedSongs.length), icon: '💾' },
+    { label: 'Favorites', value: String(favorites.size), icon: '❤️' },
+    { label: 'Queue', value: String(queue.length), icon: '🎵' },
+  ], [cachedSongs.length, favorites.size, queue.length]);
 
   // ── Online/Offline detection ───────────────────────────────────────────────
   useEffect(() => {
-    const online = () => { setIsOnline(true); addToast('Back online 🌐', 'success'); };
-    const offline = () => { setIsOnline(false); addToast('You are offline. Cached songs still work!', 'warning'); };
+    const online = () => { setIsOnline(true); addToastRef.current('Back online 🌐', 'success'); };
+    const offline = () => { setIsOnline(false); addToastRef.current('You are offline. Cached songs still work!', 'warning'); };
     window.addEventListener('online', online);
     window.addEventListener('offline', offline);
-    return () => { window.removeEventListener('online', online); window.removeEventListener('offline', offline); };
-  }, [addToast]);
+    return () => {
+      window.removeEventListener('online', online);
+      window.removeEventListener('offline', offline);
+    };
+  }, []);
 
   // ── YouTube player init ────────────────────────────────────────────────────
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
         await initYouTubePlayer('yt-player', {
-          onReady: () => { setIsPlayerReady(true); addToast('Player ready ▶️', 'success'); },
+          onReady: () => { setIsPlayerReady(true); addToastRef.current('Player ready ▶️', 'success'); },
           onStateChange: (e) => {
             if (e.data === YTPlayerState.ENDED) playerRef.current.next();
           },
-          onError: () => addToast('Playback error. Try another song.', 'error'),
+          onError: () => addToastRef.current('Playback error. Try another song.', 'error'),
         });
       } catch (err) {
         console.error('[App] YT init failed:', err);
-        addToast('Player initializing…', 'info');
+        addToastRef.current('Player initializing…', 'info');
       }
     }, 400);
     return () => clearTimeout(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Search ─────────────────────────────────────────────────────────────────
@@ -115,7 +149,7 @@ export default function App() {
         );
       } else {
         setSearchResults(result.songs);
-        addToast(`Found ${result.songs.length} songs via ${result.provider}`, 'success');
+        addToastRef.current(`Found ${result.songs.length} songs via ${result.provider}`, 'success');
       }
     } catch (err) {
       console.error('[App] Search error:', err);
@@ -123,12 +157,18 @@ export default function App() {
     } finally {
       setIsLoading(false);
     }
-  }, [apiKey, provider, addToast]);
+  }, [apiKey, provider]);
 
-  const handleSearch = (e?: React.FormEvent) => {
+  const handleSearch = useCallback((e?: React.FormEvent) => {
     e?.preventDefault();
     doSearch(searchQuery);
-  };
+  }, [doSearch, searchQuery]);
+
+  const handleClearSearch = useCallback(() => {
+    setSearchQuery('');
+    setSearchResults([]);
+    setSearchError(null);
+  }, []);
 
   // ── Song Actions ───────────────────────────────────────────────────────────
   const addToRecentlyPlayed = useCallback((song: Song) => {
@@ -149,60 +189,68 @@ export default function App() {
       addToQueue(song);
     }
     player.playSong(song, newQueue);
-    addToast(`▶ ${song.title}`, 'success');
-  }, [addToRecentlyPlayed, addToQueue, player, addToast]);
+    addToastRef.current(`▶ ${song.title}`, 'success');
+  }, [addToRecentlyPlayed, addToQueue, player]);
 
   const handleAddToQueue = useCallback((song: Song) => {
     if (!queueRef.current.some((s) => s.videoId === song.videoId)) {
       addToQueue(song);
-      addToast(`Added to queue: ${song.title}`, 'info');
+      addToastRef.current(`Added to queue: ${song.title}`, 'info');
     } else {
-      addToast('Song already in queue', 'info');
+      addToastRef.current('Song already in queue', 'info');
     }
-  }, [addToQueue, addToast]);
+  }, [addToQueue]);
 
   const toggleFavorite = useCallback((song: Song) => {
     setFavorites((prev) => {
       const n = new Set(prev);
       if (n.has(song.videoId)) {
         n.delete(song.videoId);
-        addToast('Removed from favorites', 'info');
+        addToastRef.current('Removed from favorites', 'info');
       } else {
         n.add(song.videoId);
-        addToast('Added to favorites ❤️', 'success');
+        addToastRef.current('Added to favorites ❤️', 'success');
       }
       localStorage.setItem('favorites', JSON.stringify([...n]));
       return n;
     });
-  }, [addToast]);
+  }, []);
 
-  const favRef = useRef(favorites);
-  useEffect(() => { favRef.current = favorites; }, [favorites]);
+  const handleToggleFavoriteCurrent = useCallback(() => {
+    const song = playerRef.current.currentSong;
+    if (song) toggleFavorite(song);
+  }, [toggleFavorite]);
 
   // ── Settings handlers ──────────────────────────────────────────────────────
-  const handleToggleDarkMode = () => {
+  const handleToggleDarkMode = useCallback(() => {
     setDarkMode((d) => { localStorage.setItem('darkMode', String(!d)); return !d; });
-  };
-  const handleSaveProvider = (p: SearchProvider) => {
+  }, []);
+
+  const handleSaveProvider = useCallback((p: SearchProvider) => {
     setProvider(p);
     localStorage.setItem('preferredProvider', p);
-    addToast(`Switched to ${p}`, 'info');
-  };
-  const handleSaveApiKey = (k: string) => {
+    addToastRef.current(`Switched to ${p}`, 'info');
+  }, []);
+
+  const handleSaveApiKey = useCallback((k: string) => {
     setApiKey(k);
     localStorage.setItem('youtubeApiKey', k);
-    addToast(k ? 'API key saved ✓' : 'API key cleared', 'success');
+    addToastRef.current(k ? 'API key saved ✓' : 'API key cleared', 'success');
     setShowSettings(false);
-  };
-  const handleClearOfflineCache = async () => {
+  }, []);
+
+  const handleClearOfflineCache = useCallback(async () => {
     await handleClearCache();
     refreshCache();
-    addToast('Offline cache cleared', 'success');
-  };
-  const handleClearSearchCache = () => {
+    addToastRef.current('Offline cache cleared', 'success');
+  }, [handleClearCache, refreshCache]);
+
+  const handleClearSearchCache = useCallback(() => {
     clearSearchCache();
-    addToast('Search cache cleared', 'success');
-  };
+    addToastRef.current('Search cache cleared', 'success');
+  }, []);
+
+  const handleToggleQueue = useCallback(() => setShowQueue((q) => !q), []);
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -227,7 +275,11 @@ export default function App() {
         case 'ArrowDown': e.preventDefault(); p.setVolume(Math.max(0, p.playerState.volume - 10)); break;
         case 'ArrowRight': if (e.shiftKey) { e.preventDefault(); p.seekForward(); } break;
         case 'ArrowLeft':  if (e.shiftKey) { e.preventDefault(); p.seekBackward(); } break;
-        case 'KeyF': if (p.currentSong) toggleFavorite(p.currentSong); break;
+        case 'KeyF': {
+          const song = p.currentSong;
+          if (song) toggleFavorite(song);
+          break;
+        }
       }
     };
     window.addEventListener('keydown', handler);
@@ -246,6 +298,8 @@ export default function App() {
   const headerGlass = darkMode
     ? 'bg-slate-900/80 backdrop-blur-xl border-white/10'
     : 'bg-white/80 backdrop-blur-xl border-gray-200/80';
+
+  const currentVideoId = player.currentSong?.videoId;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -275,26 +329,20 @@ export default function App() {
 
           {/* Tabs */}
           <div className={`flex gap-1 p-1 rounded-xl ${darkMode ? 'bg-white/8' : 'bg-gray-100'}`}>
-            <button
-              onClick={() => setActiveTab('music')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
-                activeTab === 'music'
-                  ? 'bg-gradient-to-r from-violet-500 to-pink-500 text-white shadow-md'
-                  : darkMode ? 'text-white/60 hover:text-white' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Music className="w-4 h-4" /> Music
-            </button>
-            <button
-              onClick={() => setActiveTab('radio')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
-                activeTab === 'radio'
-                  ? 'bg-gradient-to-r from-violet-500 to-pink-500 text-white shadow-md'
-                  : darkMode ? 'text-white/60 hover:text-white' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              <Radio className="w-4 h-4" /> Radio
-            </button>
+            {(['music', 'radio'] as const).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold transition-all ${
+                  activeTab === tab
+                    ? 'bg-gradient-to-r from-violet-500 to-pink-500 text-white shadow-md'
+                    : darkMode ? 'text-white/60 hover:text-white' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                {tab === 'music' ? <Music className="w-4 h-4" /> : <Radio className="w-4 h-4" />}
+                {tab === 'music' ? 'Music' : 'Radio'}
+              </button>
+            ))}
           </div>
 
           {/* Right controls */}
@@ -350,7 +398,7 @@ export default function App() {
                   className={`flex-1 bg-transparent outline-none px-2 py-2 text-sm ${darkMode ? 'placeholder-white/30' : 'placeholder-gray-400'}`}
                 />
                 {searchQuery && (
-                  <button type="button" onClick={() => { setSearchQuery(''); setSearchResults([]); setSearchError(null); }} className="p-2 hover:text-red-400 transition-colors">
+                  <button type="button" onClick={handleClearSearch} className="p-2 hover:text-red-400 transition-colors" aria-label="Clear search">
                     <X className="w-4 h-4" />
                   </button>
                 )}
@@ -382,7 +430,7 @@ export default function App() {
 
             {/* Search Error */}
             {searchError && (
-              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400">
+              <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400" role="alert">
                 <p className="font-medium text-sm">⚠️ {searchError}</p>
                 <div className="flex gap-2 mt-2">
                   <button
@@ -409,7 +457,7 @@ export default function App() {
                     🔍 Results <span className="text-sm font-normal text-gray-400">({searchResults.length})</span>
                   </h2>
                   <button
-                    onClick={() => { setSearchResults([]); setSearchError(null); }}
+                    onClick={handleClearSearch}
                     className={`text-xs px-3 py-1.5 rounded-lg ${darkMode ? 'bg-white/8 hover:bg-white/15' : 'bg-gray-100 hover:bg-gray-200'}`}
                   >
                     Clear
@@ -421,9 +469,9 @@ export default function App() {
                       key={song.videoId}
                       song={song}
                       isPlaying={player.isPlaying}
-                      isCurrent={player.currentSong?.videoId === song.videoId}
+                      isCurrent={currentVideoId === song.videoId}
                       isFavorite={favorites.has(song.videoId)}
-                      isCached={cachedSongs.some((c) => c.videoId === song.videoId)}
+                      isCached={cachedVideoIds.has(song.videoId)}
                       onPlay={handlePlaySong}
                       onAddToQueue={handleAddToQueue}
                       onToggleFavorite={toggleFavorite}
@@ -437,7 +485,7 @@ export default function App() {
             {/* Moods */}
             <section>
               <h2 className="text-base font-bold mb-3 flex items-center gap-2">🎭 Browse by Mood</h2>
-              <div className="flex gap-2 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
+              <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
                 {MOODS.map((mood) => (
                   <button
                     key={mood.id}
@@ -467,9 +515,9 @@ export default function App() {
                 🔥 Trending Searches
               </h2>
               <div className="flex flex-wrap gap-2">
-                {TRENDING_SEARCHES.map((term, i) => (
+                {TRENDING_SEARCHES.map((term) => (
                   <button
-                    key={i}
+                    key={term}
                     onClick={() => { setSearchQuery(term); doSearch(term); }}
                     className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all hover:scale-105 active:scale-95 border ${
                       darkMode
@@ -490,13 +538,13 @@ export default function App() {
                   <Clock className="w-4 h-4 text-violet-400" />
                   ⏱️ Recently Played
                 </h2>
-                <div className="flex gap-3 overflow-x-auto pb-2" style={{ scrollbarWidth: 'none' }}>
+                <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
                   {recentlyPlayed.slice(0, 12).map((song) => (
                     <button
                       key={song.videoId}
                       onClick={() => handlePlaySong(song)}
                       className={`flex-shrink-0 w-40 p-3 rounded-2xl border text-left transition-all hover:scale-105 active:scale-95 group ${
-                        player.currentSong?.videoId === song.videoId
+                        currentVideoId === song.videoId
                           ? 'bg-violet-500/20 border-violet-500/40'
                           : darkMode
                           ? 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-violet-500/30'
@@ -508,7 +556,9 @@ export default function App() {
                           src={song.thumbnail}
                           alt={song.title}
                           className="w-full h-24 rounded-xl object-cover"
-                          onError={(e) => { (e.target as HTMLImageElement).src = `https://i.ytimg.com/vi/${song.videoId}/mqdefault.jpg`; }}
+                          loading="lazy"
+                          decoding="async"
+                          draggable={false}
                         />
                         <div className="absolute inset-0 bg-black/40 rounded-xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                           <Play className="w-8 h-8 text-white fill-white" />
@@ -523,30 +573,27 @@ export default function App() {
             )}
 
             {/* Favorites Quick Access */}
-            {favorites.size > 0 && recentlyPlayed.length > 0 && (
+            {favoriteSongs.length > 0 && (
               <section>
                 <h2 className="text-base font-bold mb-3 flex items-center gap-2">
                   <Heart className="w-4 h-4 text-pink-400 fill-pink-400" />
                   ❤️ Your Favorites
                 </h2>
                 <div className="space-y-2">
-                  {recentlyPlayed
-                    .filter((s) => favorites.has(s.videoId))
-                    .slice(0, 5)
-                    .map((song) => (
-                      <SongCard
-                        key={song.videoId}
-                        song={song}
-                        isPlaying={player.isPlaying}
-                        isCurrent={player.currentSong?.videoId === song.videoId}
-                        isFavorite={true}
-                        isCached={cachedSongs.some((c) => c.videoId === song.videoId)}
-                        onPlay={handlePlaySong}
-                        onAddToQueue={handleAddToQueue}
-                        onToggleFavorite={toggleFavorite}
-                        darkMode={darkMode}
-                      />
-                    ))}
+                  {favoriteSongs.map((song) => (
+                    <SongCard
+                      key={song.videoId}
+                      song={song}
+                      isPlaying={player.isPlaying}
+                      isCurrent={currentVideoId === song.videoId}
+                      isFavorite={true}
+                      isCached={cachedVideoIds.has(song.videoId)}
+                      onPlay={handlePlaySong}
+                      onAddToQueue={handleAddToQueue}
+                      onToggleFavorite={toggleFavorite}
+                      darkMode={darkMode}
+                    />
+                  ))}
                 </div>
               </section>
             )}
@@ -564,7 +611,7 @@ export default function App() {
                       key={song.videoId}
                       song={song}
                       isPlaying={player.isPlaying}
-                      isCurrent={player.currentSong?.videoId === song.videoId}
+                      isCurrent={currentVideoId === song.videoId}
                       isFavorite={favorites.has(song.videoId)}
                       isCached={true}
                       onPlay={handlePlaySong}
@@ -577,18 +624,13 @@ export default function App() {
               </section>
             )}
 
-            {/* Popular Artists count indicator */}
+            {/* Stats */}
             <section>
               <h2 className="text-base font-bold mb-1 flex items-center gap-2 text-gray-400 text-sm">
                 ℹ️ App Info
               </h2>
-              <div className={`grid grid-cols-2 sm:grid-cols-4 gap-3`}>
-                {[
-                  { label: 'Artists', value: `${ARTISTS.length}+`, icon: '🎤' },
-                  { label: 'Offline Songs', value: String(cachedSongs.length), icon: '💾' },
-                  { label: 'Favorites', value: String(favorites.size), icon: '❤️' },
-                  { label: 'Queue', value: String(queue.length), icon: '🎵' },
-                ].map((stat) => (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {stats.map((stat) => (
                   <div
                     key={stat.label}
                     className={`p-3 rounded-xl border text-center ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/60 border-gray-200'}`}
@@ -625,8 +667,8 @@ export default function App() {
         onToggleMute={player.toggleMute}
         onToggleShuffle={player.toggleShuffle}
         onSetRepeatMode={player.setRepeatMode}
-        onToggleFavorite={() => player.currentSong && toggleFavorite(player.currentSong)}
-        onToggleQueue={() => setShowQueue((q) => !q)}
+        onToggleFavorite={handleToggleFavoriteCurrent}
+        onToggleQueue={handleToggleQueue}
       />
 
       {/* ── Queue Panel ─────────────────────────────────────────────────── */}
@@ -635,7 +677,7 @@ export default function App() {
           queue={queue}
           currentSong={player.currentSong}
           darkMode={darkMode}
-          onPlay={(song) => { handlePlaySong(song); }}
+          onPlay={handlePlaySong}
           onRemove={removeFromQueue}
           onClear={clearQueue}
           onClose={() => setShowQueue(false)}
@@ -665,6 +707,7 @@ export default function App() {
         className={`fixed bottom-0 left-4 z-30 text-[10px] px-2 py-1 rounded-t-lg ${
           isOnline ? 'bg-green-500/20 text-green-400' : 'bg-orange-500/20 text-orange-400'
         } ${player.currentSong ? 'bottom-28 md:bottom-32' : 'bottom-0'}`}
+        aria-hidden="true"
       >
         {isOnline ? '🌐 Online' : '📴 Offline Mode'}
       </div>
