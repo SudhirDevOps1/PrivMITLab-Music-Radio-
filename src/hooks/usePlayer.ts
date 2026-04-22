@@ -15,36 +15,31 @@ const DEFAULT_STATE: PlayerState = {
 export function usePlayer(queue: Song[]) {
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [playerState, setPlayerState] = useState<PlayerState>(DEFAULT_STATE);
-  const [isPlaying, setIsPlaying] = useState(false);
 
   const currentIndexRef = useRef(-1);
   const queueRef = useRef<Song[]>(queue);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stateRef = useRef(playerState);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Refs for media session handlers to avoid re-registering
+  const nextRef = useRef<() => void>(() => {});
+  const prevRef = useRef<() => void>(() => {});
+  const seekRef = useRef<(seconds: number) => void>(() => {});
+
+  // Sync refs
   useEffect(() => { queueRef.current = queue; }, [queue]);
-  useEffect(() => { stateRef.current = playerState; }, [playerState]);
 
-  // Poll YT player progress
-  const startPolling = useCallback(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(() => {
-      const yt = getYTPlayer();
-      if (!yt) return;
-      try {
-        const state = yt.getPlayerState();
-        const ct = yt.getCurrentTime() || 0;
-        const dur = yt.getDuration() || 0;
-        const playing = state === YTState.PLAYING;
-
-        setIsPlaying(playing);
-        setPlayerState((prev) => ({ ...prev, currentTime: ct, duration: dur }));
-      } catch {
-        // YT not ready yet
-      }
-    }, 500);
+  // Smart state updater - updates state + ref together (prevents stale closures)
+  const updateState = useCallback((patch: Partial<PlayerState>) => {
+    setPlayerState((prev) => {
+      const next = { ...prev, ...patch };
+      stateRef.current = next;
+      return next;
+    });
   }, []);
 
+  // ─── Polling ────────────────────────────────────────────────────────────────
   const stopPolling = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -52,49 +47,106 @@ export function usePlayer(queue: Song[]) {
     }
   }, []);
 
-  // Update Media Session
+  const startPolling = useCallback(() => {
+    stopPolling();
+    intervalRef.current = setInterval(() => {
+      const yt = getYTPlayer();
+      if (!yt) return;
+      try {
+        const state = yt.getPlayerState();
+        const ct = Math.floor(yt.getCurrentTime() || 0);
+        const dur = Math.floor(yt.getDuration() || 0);
+        const playing = state === YTState.PLAYING || state === YTState.BUFFERING;
+
+        // Only update if something changed (prevents unnecessary re-renders)
+        const prev = stateRef.current;
+        if (prev.isPlaying !== playing || prev.currentTime !== ct || prev.duration !== dur) {
+          updateState({ isPlaying: playing, currentTime: ct, duration: dur });
+        }
+      } catch {
+        // YT not ready yet
+      }
+    }, 500);
+  }, [stopPolling, updateState]);
+
+  // ─── Media Session ──────────────────────────────────────────────────────────
   const updateMediaSession = useCallback((song: Song) => {
     if (!('mediaSession' in navigator)) return;
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: song.title,
-      artist: song.artist,
-      album: 'PrivMITLab Music',
-      artwork: [
-        { src: song.thumbnail, sizes: '480x360', type: 'image/jpeg' },
-      ],
-    });
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: song.title,
+        artist: song.artist,
+        album: 'PrivMITLab Music',
+        artwork: [{ src: song.thumbnail, sizes: '480x360', type: 'image/jpeg' }],
+      });
+    } catch {}
   }, []);
 
+  // Register media session handlers ONCE
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.setActionHandler('play', () => {
+      const yt = getYTPlayer();
+      if (yt) { try { yt.playVideo(); updateState({ isPlaying: true }); } catch {} }
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+      const yt = getYTPlayer();
+      if (yt) { try { yt.pauseVideo(); updateState({ isPlaying: false }); } catch {} }
+    });
+    navigator.mediaSession.setActionHandler('nexttrack', () => nextRef.current());
+    navigator.mediaSession.setActionHandler('previoustrack', () => prevRef.current());
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (details.seekTime != null) seekRef.current(details.seekTime);
+    });
+
+    return () => {
+      navigator.mediaSession.setActionHandler('play', null);
+      navigator.mediaSession.setActionHandler('pause', null);
+      navigator.mediaSession.setActionHandler('nexttrack', null);
+      navigator.mediaSession.setActionHandler('previoustrack', null);
+      navigator.mediaSession.setActionHandler('seekto', null);
+    };
+  }, [updateState]);
+
+  // ─── Core Controls ──────────────────────────────────────────────────────────
   const playSong = useCallback((song: Song, q?: Song[]) => {
-    const queue = q || queueRef.current;
-    const idx = queue.findIndex((s) => s.videoId === song.videoId);
+    // Clear any pending retry
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+
+    const currentQueue = q || queueRef.current;
+    const idx = currentQueue.findIndex((s) => s.videoId === song.videoId);
     currentIndexRef.current = idx >= 0 ? idx : 0;
 
     setCurrentSong(song);
     updateMediaSession(song);
 
-    const yt = getYTPlayer();
-    if (yt) {
+    const loadVideo = (yt: ReturnType<typeof getYTPlayer>) => {
       try {
         yt.loadVideoById(song.videoId);
-        setIsPlaying(true);
-        setPlayerState((prev) => ({ ...prev, isPlaying: true, currentTime: 0, duration: 0 }));
+        // Apply current volume to new track
+        try { yt.setVolume(stateRef.current.volume); } catch {}
+        updateState({ isPlaying: true, currentTime: 0, duration: 0 });
         startPolling();
       } catch (e) {
         console.error('[Player] loadVideoById failed:', e);
       }
+    };
+
+    const yt = getYTPlayer();
+    if (yt) {
+      loadVideo(yt);
     } else {
       console.warn('[Player] YT not ready, retrying in 1s');
-      setTimeout(() => {
+      retryTimeoutRef.current = setTimeout(() => {
+        retryTimeoutRef.current = null;
         const ytRetry = getYTPlayer();
-        if (ytRetry) {
-          ytRetry.loadVideoById(song.videoId);
-          setIsPlaying(true);
-          startPolling();
-        }
+        if (ytRetry) loadVideo(ytRetry);
       }, 1000);
     }
-  }, [updateMediaSession, startPolling]);
+  }, [updateMediaSession, startPolling, updateState]);
 
   const togglePlay = useCallback(() => {
     const yt = getYTPlayer();
@@ -103,16 +155,17 @@ export function usePlayer(queue: Song[]) {
       const state = yt.getPlayerState();
       if (state === YTState.PLAYING) {
         yt.pauseVideo();
-        setIsPlaying(false);
+        updateState({ isPlaying: false });
       } else {
         yt.playVideo();
-        setIsPlaying(true);
+        updateState({ isPlaying: true });
       }
     } catch (e) {
       console.error('[Player] togglePlay error:', e);
     }
-  }, [currentSong]);
+  }, [currentSong, updateState]);
 
+  // ─── Navigation ─────────────────────────────────────────────────────────────
   const next = useCallback(() => {
     const q = queueRef.current;
     if (!q.length) return;
@@ -120,16 +173,24 @@ export function usePlayer(queue: Song[]) {
 
     let nextIdx: number;
     if (st.isShuffle) {
-      nextIdx = Math.floor(Math.random() * q.length);
+      if (q.length <= 1) {
+        nextIdx = 0;
+      } else {
+        // Pick random, but NOT the current song
+        do {
+          nextIdx = Math.floor(Math.random() * q.length);
+        } while (nextIdx === currentIndexRef.current);
+      }
     } else if (st.repeatMode === 'one') {
       nextIdx = currentIndexRef.current;
     } else {
       nextIdx = currentIndexRef.current + 1;
       if (nextIdx >= q.length) {
         if (st.repeatMode === 'all') nextIdx = 0;
-        else return; // stop
+        else return; // stop at end
       }
     }
+
     currentIndexRef.current = nextIdx;
     const song = q[nextIdx];
     if (song) playSong(song, q);
@@ -138,26 +199,44 @@ export function usePlayer(queue: Song[]) {
   const previous = useCallback(() => {
     const q = queueRef.current;
     if (!q.length) return;
+    const st = stateRef.current;
+
+    // If song has played > 3 seconds, restart it instead of going back
+    const yt = getYTPlayer();
+    if (yt) {
+      try {
+        const ct = yt.getCurrentTime() || 0;
+        if (ct > 3) {
+          yt.seekTo(0, true);
+          updateState({ currentTime: 0 });
+          return;
+        }
+      } catch {}
+    }
+
     let prevIdx = currentIndexRef.current - 1;
-    if (prevIdx < 0) prevIdx = 0;
+    if (prevIdx < 0) {
+      prevIdx = st.repeatMode === 'all' ? q.length - 1 : 0;
+    }
     currentIndexRef.current = prevIdx;
     const song = q[prevIdx];
     if (song) playSong(song, q);
-  }, [playSong]);
+  }, [playSong, updateState]);
 
+  // ─── Seek ───────────────────────────────────────────────────────────────────
   const seek = useCallback((seconds: number) => {
     const yt = getYTPlayer();
     if (!yt) return;
     try {
       yt.seekTo(seconds, true);
-      setPlayerState((prev) => ({ ...prev, currentTime: seconds }));
+      updateState({ currentTime: seconds });
     } catch {}
-  }, []);
+  }, [updateState]);
 
   const seekForward = useCallback(() => {
     const yt = getYTPlayer();
     if (!yt) return;
-    try { seek(yt.getCurrentTime() + 10); } catch {}
+    try { seek(Math.min(yt.getDuration() || 0, yt.getCurrentTime() + 10)); } catch {}
   }, [seek]);
 
   const seekBackward = useCallback(() => {
@@ -166,17 +245,18 @@ export function usePlayer(queue: Song[]) {
     try { seek(Math.max(0, yt.getCurrentTime() - 10)); } catch {}
   }, [seek]);
 
+  // ─── Volume & Modes ─────────────────────────────────────────────────────────
   const setVolume = useCallback((vol: number) => {
+    const clamped = Math.max(0, Math.min(100, Math.round(vol)));
     const yt = getYTPlayer();
-    const clamped = Math.max(0, Math.min(100, vol));
     if (yt) {
       try {
         yt.setVolume(clamped);
         if (clamped > 0 && yt.isMuted()) yt.unMute();
       } catch {}
     }
-    setPlayerState((prev) => ({ ...prev, volume: clamped, isMuted: clamped === 0 }));
-  }, []);
+    updateState({ volume: clamped, isMuted: clamped === 0 });
+  }, [updateState]);
 
   const toggleMute = useCallback(() => {
     const yt = getYTPlayer();
@@ -184,53 +264,38 @@ export function usePlayer(queue: Song[]) {
     try {
       if (yt.isMuted()) {
         yt.unMute();
-        setPlayerState((prev) => ({ ...prev, isMuted: false }));
+        updateState({ isMuted: false });
       } else {
         yt.mute();
-        setPlayerState((prev) => ({ ...prev, isMuted: true }));
+        updateState({ isMuted: true });
       }
     } catch {}
-  }, []);
+  }, [updateState]);
 
   const toggleShuffle = useCallback(() => {
-    setPlayerState((prev) => ({ ...prev, isShuffle: !prev.isShuffle }));
-  }, []);
+    updateState({ isShuffle: !stateRef.current.isShuffle });
+  }, [updateState]);
 
   const setRepeatMode = useCallback((mode: 'none' | 'one' | 'all') => {
-    setPlayerState((prev) => ({ ...prev, repeatMode: mode }));
-  }, []);
+    updateState({ repeatMode: mode });
+  }, [updateState]);
 
-  // Register Media Session handlers
+  // ─── Keep refs updated for Media Session ────────────────────────────────────
+  useEffect(() => { nextRef.current = next; }, [next]);
+  useEffect(() => { prevRef.current = previous; }, [previous]);
+  useEffect(() => { seekRef.current = seek; }, [seek]);
+
+  // ─── Cleanup ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!('mediaSession' in navigator)) return;
-    navigator.mediaSession.setActionHandler('play', () => {
-      const yt = getYTPlayer();
-      if (yt) { try { yt.playVideo(); setIsPlaying(true); } catch {} }
-    });
-    navigator.mediaSession.setActionHandler('pause', () => {
-      const yt = getYTPlayer();
-      if (yt) { try { yt.pauseVideo(); setIsPlaying(false); } catch {} }
-    });
-    navigator.mediaSession.setActionHandler('nexttrack', next);
-    navigator.mediaSession.setActionHandler('previoustrack', previous);
-    navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (details.seekTime != null) seek(details.seekTime);
-    });
-  }, [next, previous, seek]);
-
-  // Apply initial volume
-  useEffect(() => {
-    const yt = getYTPlayer();
-    if (yt) {
-      try { yt.setVolume(playerState.volume); } catch {}
-    }
-  });
-
-  useEffect(() => () => stopPolling(), [stopPolling]);
+    return () => {
+      stopPolling();
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+    };
+  }, [stopPolling]);
 
   return {
     currentSong,
-    isPlaying,
+    isPlaying: playerState.isPlaying,
     playerState,
     playSong,
     togglePlay,
