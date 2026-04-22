@@ -1,5 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 export enum PlayerState {
   UNSTARTED = -1,
   ENDED = 0,
@@ -32,40 +30,83 @@ interface PlayerCallbacks {
   onError?: (event: { data: number }) => void;
 }
 
-let playerReadyPromise: Promise<YTPlayer> | null = null;
-
-function loadYTScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if ((window as any).YT?.Player) {
-      resolve();
-      return;
-    }
-    if (document.getElementById('yt-iframe-api-script')) {
-      const poll = setInterval(() => {
-        if ((window as any).YT?.Player) {
-          clearInterval(poll);
-          resolve();
-        }
-      }, 100);
-      setTimeout(() => {
-        clearInterval(poll);
-        reject(new Error('YT API timeout'));
-      }, 20000);
-      return;
-    }
-    const tag = document.createElement('script');
-    tag.id = 'yt-iframe-api-script';
-    tag.src = 'https://www.youtube.com/iframe_api';
-    tag.onerror = () => reject(new Error('Failed to load YouTube IFrame API'));
-    document.head.appendChild(tag);
-
-    (window as any).onYouTubeIframeAPIReady = () => resolve();
-    setTimeout(() => reject(new Error('YT API timeout')), 20000);
-  });
+// ─── Window Type Extension ──────────────────────────────────────────────────
+declare global {
+  interface Window {
+    YT?: {
+      Player: new (id: string | HTMLElement, opts: any) => any;
+    };
+    onYouTubeIframeAPIReady?: () => void;
+    _ytPlayer?: YTPlayer;
+  }
 }
 
+// ─── Constants ──────────────────────────────────────────────────────────────
+const DEFAULT_CONTAINER_ID = 'yt-hidden-player-container';
+const SCRIPT_ID = 'yt-iframe-api-script';
+const SCRIPT_TIMEOUT = 15000;
+const READY_TIMEOUT = 10000;
+
+// ─── Module State ───────────────────────────────────────────────────────────
+let scriptLoadPromise: Promise<void> | null = null;
+let playerReadyPromise: Promise<YTPlayer> | null = null;
+
+// ─── YouTube Error Codes ────────────────────────────────────────────────────
+const YT_ERROR_MESSAGES: Record<number, string> = {
+  2: 'Invalid parameter',
+  5: 'HTML5 player error',
+  100: 'Video not found',
+  101: 'Video not allowed in embedded players',
+  150: 'Video not allowed in embedded players',
+};
+
+// ─── Script Loader ──────────────────────────────────────────────────────────
+function loadYTScript(): Promise<void> {
+  if (window.YT?.Player) return Promise.resolve();
+
+  if (scriptLoadPromise) return scriptLoadPromise;
+
+  scriptLoadPromise = new Promise<void>((resolve, reject) => {
+    // Inject script if not already present
+    if (!document.getElementById(SCRIPT_ID)) {
+      const tag = document.createElement('script');
+      tag.id = SCRIPT_ID;
+      tag.src = 'https://www.youtube.com/iframe_api';
+      tag.onerror = () => {
+        scriptLoadPromise = null; // Allow retry
+        reject(new Error('Failed to load YouTube IFrame API script'));
+      };
+      document.head.appendChild(tag);
+    }
+
+    // Robust polling: checks every 100ms if YT.Player is available.
+    // More reliable than relying solely on the global callback,
+    // which can be overwritten by other libraries.
+    const poll = setInterval(() => {
+      if (window.YT?.Player) {
+        clearInterval(poll);
+        resolve();
+      }
+    }, 100);
+
+    // Timeout fallback
+    setTimeout(() => {
+      clearInterval(poll);
+      if (window.YT?.Player) {
+        resolve();
+      } else {
+        scriptLoadPromise = null; // Allow retry
+        reject(new Error('YouTube IFrame API load timeout'));
+      }
+    }, SCRIPT_TIMEOUT);
+  });
+
+  return scriptLoadPromise;
+}
+
+// ─── Player Initialization ──────────────────────────────────────────────────
 export async function initYouTubePlayer(
-  containerId: string,
+  containerId: string = DEFAULT_CONTAINER_ID,
   callbacks: PlayerCallbacks = {},
 ): Promise<YTPlayer> {
   if (playerReadyPromise) return playerReadyPromise;
@@ -73,17 +114,24 @@ export async function initYouTubePlayer(
   playerReadyPromise = (async () => {
     await loadYTScript();
 
-    return new Promise<YTPlayer>((resolve, _reject) => {
+    return new Promise<YTPlayer>((resolve, reject) => {
+      // Ensure container exists
       let container = document.getElementById(containerId);
       if (!container) {
         container = document.createElement('div');
         container.id = containerId;
+        container.setAttribute('aria-hidden', 'true');
         container.style.cssText =
-          'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;';
+          'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;opacity:0;';
         document.body.appendChild(container);
       }
 
-      const player = new (window as any).YT.Player(containerId, {
+      // Safety timeout for onReady
+      const readyTimer = setTimeout(() => {
+        reject(new Error('YouTube Player onReady timeout'));
+      }, READY_TIMEOUT);
+
+      const player = new window.YT!.Player(containerId, {
         width: '1',
         height: '1',
         playerVars: {
@@ -99,34 +147,52 @@ export async function initYouTubePlayer(
         },
         events: {
           onReady: () => {
-            (window as any)._ytPlayer = player;
+            clearTimeout(readyTimer);
+            window._ytPlayer = player as YTPlayer;
             callbacks.onReady?.();
             resolve(player as YTPlayer);
           },
-          onStateChange: (e: any) => callbacks.onStateChange?.({ data: e.data }),
+          onStateChange: (e: any) => {
+            callbacks.onStateChange?.({ data: e.data });
+          },
           onError: (e: any) => {
-            console.error('[YT] Player error code:', e.data);
-            callbacks.onError?.({ data: e.data });
+            const code = e.data as number;
+            const msg = YT_ERROR_MESSAGES[code] || `Unknown error (${code})`;
+            console.error(`[YT] Player error: ${msg}`);
+            callbacks.onError?.({ data: code });
           },
         },
       });
     });
   })();
 
+  // If initialization fails, clear promise so it can be retried
+  playerReadyPromise.catch(() => {
+    playerReadyPromise = null;
+  });
+
   return playerReadyPromise;
 }
 
+// ─── Player Access ──────────────────────────────────────────────────────────
 export function getYTPlayer(): YTPlayer | null {
-  return (window as any)._ytPlayer || null;
+  return window._ytPlayer || null;
 }
 
+// ─── Player Cleanup ─────────────────────────────────────────────────────────
 export function resetPlayer(): void {
   playerReadyPromise = null;
+
   try {
-    const p = (window as any)._ytPlayer;
-    if (p) p.destroy();
-  } catch {
-    // ignore
+    const p = window._ytPlayer;
+    if (p && typeof p.destroy === 'function') p.destroy();
+  } catch (e) {
+    console.warn('[YT] Error destroying player:', e);
   }
-  (window as any)._ytPlayer = null;
+
+  window._ytPlayer = undefined;
+
+  // Clean up hidden container to prevent DOM bloat (e.g., during HMR)
+  const container = document.getElementById(DEFAULT_CONTAINER_ID);
+  if (container) container.remove();
 }
