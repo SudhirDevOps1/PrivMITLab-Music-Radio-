@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo, useCallback } from 'react';
 import { Play, Plus, Heart, Music } from 'lucide-react';
 import type { Song } from '@/types';
 
@@ -14,12 +14,14 @@ interface Props {
   darkMode: boolean;
 }
 
-export default function SongCard({
+const BARS = [0, 1, 2];
+
+export default memo(function SongCard({
   song,
-  isPlaying,
-  isCurrent,
-  isFavorite,
-  isCached,
+  isPlaying = false,
+  isCurrent = false,
+  isFavorite = false,
+  isCached = false,
   onPlay,
   onAddToQueue,
   onToggleFavorite,
@@ -27,9 +29,14 @@ export default function SongCard({
 }: Props) {
   const [imgError, setImgError] = useState(false);
 
+  const handlePlay = useCallback(() => onPlay(song), [onPlay, song]);
+  const handleAddToQueue = useCallback(() => onAddToQueue(song), [onAddToQueue, song]);
+  const handleToggleFavorite = useCallback(() => onToggleFavorite(song), [onToggleFavorite, song]);
+  const handleImgError = useCallback(() => setImgError(true), []);
+
   return (
     <div
-      className={`flex items-center gap-3 p-3 rounded-xl transition-all group ${
+      className={`flex items-center gap-3 p-3 rounded-xl transition-all group transform-gpu ${
         isCurrent
           ? 'bg-violet-500/20 border border-violet-500/50'
           : darkMode
@@ -38,24 +45,28 @@ export default function SongCard({
       }`}
     >
       {/* Thumbnail */}
-      <div className="relative flex-shrink-0">
+      <div className="relative flex-shrink-0 w-14 h-14">
         {!imgError ? (
           <img
             src={song.thumbnail}
             alt={song.title}
             className="w-14 h-14 rounded-lg object-cover"
-            onError={() => setImgError(true)}
+            onError={handleImgError}
             loading="lazy"
+            decoding="async"
+            draggable={false}
           />
         ) : (
           <div className="w-14 h-14 rounded-lg bg-gradient-to-br from-violet-600 to-pink-600 flex items-center justify-center">
             <Music className="w-6 h-6 text-white" />
           </div>
         )}
+
+        {/* Now Playing Animation */}
         {isCurrent && isPlaying && (
           <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-black/50">
             <div className="flex gap-0.5 items-end h-5">
-              {[0, 1, 2].map((i) => (
+              {BARS.map((i) => (
                 <div
                   key={i}
                   className="w-1 bg-violet-400 rounded-sm"
@@ -68,8 +79,10 @@ export default function SongCard({
             </div>
           </div>
         )}
+
+        {/* Hover Play Overlay */}
         <button
-          onClick={() => onPlay(song)}
+          onClick={handlePlay}
           className="absolute inset-0 flex items-center justify-center bg-black/50 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
           aria-label={`Play ${song.title}`}
         >
@@ -100,7 +113,7 @@ export default function SongCard({
       {/* Actions */}
       <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
         <button
-          onClick={() => onToggleFavorite(song)}
+          onClick={handleToggleFavorite}
           className={`p-2 rounded-full transition-colors ${
             isFavorite
               ? 'text-pink-500'
@@ -108,21 +121,21 @@ export default function SongCard({
               ? 'hover:bg-white/10 text-white/40'
               : 'hover:bg-gray-100 text-gray-400'
           }`}
-          aria-label="Toggle favorite"
+          aria-label={isFavorite ? `Remove ${song.title} from favorites` : `Add ${song.title} to favorites`}
         >
           <Heart className={`w-4 h-4 ${isFavorite ? 'fill-pink-500' : ''}`} />
         </button>
         <button
-          onClick={() => onAddToQueue(song)}
+          onClick={handleAddToQueue}
           className={`p-2 rounded-full transition-colors ${
             darkMode ? 'hover:bg-white/10 text-white/40' : 'hover:bg-gray-100 text-gray-400'
           }`}
-          aria-label="Add to queue"
+          aria-label={`Add ${song.title} to queue`}
         >
           <Plus className="w-4 h-4" />
         </button>
         <button
-          onClick={() => onPlay(song)}
+          onClick={handlePlay}
           className="p-2 bg-violet-500 hover:bg-violet-600 rounded-full transition-colors"
           aria-label={`Play ${song.title}`}
         >
@@ -131,4 +144,4 @@ export default function SongCard({
       </div>
     </div>
   );
-}
+});
