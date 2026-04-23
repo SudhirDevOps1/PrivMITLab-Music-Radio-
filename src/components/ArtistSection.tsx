@@ -23,13 +23,6 @@ const ArtistCard = memo(function ArtistCard({
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
-  const imgRef = useRef<HTMLImageElement>(null);
-
-  useEffect(() => {
-    if (imgRef.current?.complete) {
-      setImgLoaded(true);
-    }
-  }, [src]);
 
   const handleClick = useCallback(() => onArtistClick(query), [onArtistClick, query]);
   const handleError = useCallback(() => {
@@ -67,7 +60,6 @@ const ArtistCard = memo(function ArtistCard({
         )}
 
         <img
-          ref={imgRef}
           src={src}
           alt={artist.name}
           className={`w-20 h-20 sm:w-24 sm:h-24 rounded-full object-cover ring-2 ring-violet-400/30 shadow-lg
@@ -78,7 +70,6 @@ const ArtistCard = memo(function ArtistCard({
           /* NO loading="lazy" — causes images to never load in horizontal scroll */
           decoding="async"
           draggable={false}
-          referrerPolicy="no-referrer"
         />
 
         {/* Music badge */}
