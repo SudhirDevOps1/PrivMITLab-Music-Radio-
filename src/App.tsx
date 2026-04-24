@@ -113,7 +113,6 @@ export default function App() {
     }, []);
 
     // ── YouTube player init ────────────────────────────────────────────────────
-    // NOTE: onStateChange REMOVED — usePlayer.ts handles auto-next with guards
     useEffect(() => {
         const timer = setTimeout(async () => {
             try {
@@ -122,7 +121,6 @@ export default function App() {
                         setIsPlayerReady(true);
                         addToastRef.current('Player ready ▶️', 'success');
                     },
-                    // ❌ REMOVED onStateChange — usePlayer polling handles auto-next
                     onError: () => addToastRef.current('Playback error. Try another song.', 'error'),
                 });
             } catch (err) {
