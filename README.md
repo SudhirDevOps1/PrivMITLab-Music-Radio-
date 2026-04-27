@@ -26,48 +26,48 @@
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="screenshot/img1.png" alt="Home Screen — Discover & Search" width="100%"/>
+      <img src="screenshot/img1.jpg" alt="Home Screen — Discover & Search" width="100%"/>
       <br/>
       <sub><b>🏠 Home Screen — Discover & Search</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="screenshot/img2.png" alt="Music Player — Now Playing View" width="100%"/>
+      <img src="screenshot/img2.jpg" alt="Music Player — Now Playing View" width="100%"/>
       <br/>
       <sub><b>🎵 Music Player — Now Playing View</b></sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="screenshot/img3.png" alt="Live Radio — 50,000+ Stations" width="100%"/>
+      <img src="screenshot/img3.jpg" alt="Live Radio — 50,000+ Stations" width="100%"/>
       <br/>
       <sub><b>📻 Live Radio — 50,000+ Global Stations</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="screenshot/img4.png" alt="Curated Artists — 40+ Indian Artists" width="100%"/>
+      <img src="screenshot/img4.jpg" alt="Curated Artists — 40+ Indian Artists" width="100%"/>
       <br/>
       <sub><b>🎤 Curated Artists — 40+ Indian Stars</b></sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="screenshot/img5.png" alt="Mood-Based Discovery" width="100%"/>
+      <img src="screenshot/img5.jpg" alt="Mood-Based Discovery" width="100%"/>
       <br/>
       <sub><b>🎭 Mood-Based Music Discovery</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="screenshot/img6.png" alt="Favorites & History" width="100%"/>
+      <img src="screenshot/img6.jpg" alt="Favorites & History" width="100%"/>
       <br/>
       <sub><b>❤️ Favorites & Listening History</b></sub>
     </td>
   </tr>
   <tr>
     <td align="center" width="50%">
-      <img src="screenshot/img7.png" alt="Dark Mode — Glass Morphism UI" width="100%"/>
+      <img src="screenshot/img7.jpg" alt="Dark Mode — Glass Morphism UI" width="100%"/>
       <br/>
       <sub><b>🌙 Dark Mode — Glass Morphism UI</b></sub>
     </td>
     <td align="center" width="50%">
-      <img src="screenshot/img8.png" alt="Offline Mode & Queue Management" width="100%"/>
+      <img src="screenshot/img8.jpg" alt="Offline Mode & Queue Management" width="100%"/>
       <br/>
       <sub><b>📴 Offline Mode & Queue Management</b></sub>
     </td>
